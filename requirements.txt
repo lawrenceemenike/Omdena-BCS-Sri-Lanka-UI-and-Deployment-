@@ -1,0 +1,10 @@
+transformers
+torch
+torchvision
+streamlit
+faknow
+pandas
+matplotlib
+scikit-learn
+seaborn
+plotly
