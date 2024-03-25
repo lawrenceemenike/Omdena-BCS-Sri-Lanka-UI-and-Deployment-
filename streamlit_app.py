@@ -1,66 +1,211 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import altair as alt
-from datetime import datetime
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import CountVectorizer
+import seaborn as sns
+import plotly.express as px
+import plotly.io as pio
+import plotly.graph_objects as go
 
-# Generate dummy data
-def load_data():
-    np.random.seed(0)
-    dates = pd.date_range('2021-01-01', periods=100, freq='D')
-    data = pd.DataFrame({
-        'Date': np.tile(dates, 5),
-        'Keyword': np.random.choice(['Education', 'Employment', 'Healthcare'], size=500),
-        'Gender': np.random.choice(['Male', 'Female', 'Non-binary'], size=500),
-        'SocialGroup': np.random.choice(['Group A', 'Group B', 'Group C'], size=500),
-        'Sector': np.random.choice(['Health', 'Education', 'Technology'], size=500),
-        'District': np.random.choice(['District A', 'District B', 'Province C'], size=500),
-        'Role': np.random.choice(['Leadership', 'Technical', 'Administrative'], size=500),
-        'Enrollment': np.random.choice(['Enrolled', 'Not Enrolled'], size=500),
-        'Mentions': np.random.randint(10, 100, size=500)
-    })
-    return data
+# Set page configuration
+st.set_page_config(layout="wide")
 
-# Visualization functions (dummy implementations)
-def visualize_data(chart_type, data, title):
-    if chart_type == "time_series":
-        chart = alt.Chart(data).mark_line().encode(x='Date', y='Mentions', color='Keyword').properties(title=title)
-    elif chart_type == "bar":
-        chart = alt.Chart(data).mark_bar().encode(x='Gender', y='Mentions', color='Gender').properties(title=title)
+# Function to load and clean data
+def load_and_clean_data():
+    df1 = pd.read_csv("data/reviewed_social_media_english.csv")
+    df2 = pd.read_csv("data/reviewed_news_english.csv")
+    df3 = pd.read_csv("data/tamil_social_media.csv")  
+    df4 = pd.read_csv("data/tamil_news.csv")       
+
+    # Concatenate dataframes and clean data
+    df_combined = pd.concat([df1, df2, df3, df4])
+    
+    # Replace 'nan' and 'None' with numpy NaN for removal
+    df_combined['Domain'] = df_combined['Domain'].replace({"MUSLIM": "Muslim", "nan": pd.NA, "None": pd.NA, "Other-Ethnic": "Other-Ethnicity"})
+    
+    # Specific replacements for 'Sentiment' and 'Discrimination'
+    df_combined['Sentiment'] = df_combined['Sentiment'].replace({"nan": pd.NA, "None": pd.NA, "No": pd.NA})
+    df_combined['Discrimination'] = df_combined['Discrimination'].replace({"nan": pd.NA, "None": pd.NA, "No": pd.NA})
+    
+    # Drop rows with NA values in 'Domain', 'Sentiment', and 'Discrimination'
+    df_combined.dropna(subset=['Domain', 'Sentiment', 'Discrimination'], inplace=True)
+
+    return df_combined
+
+df = load_and_clean_data()
+
+
+# Page navigation setup
+page_names = ["Overview", "Sentiment Analysis", "Discrimination Analysis", "Channel Analysis"]
+page = st.sidebar.selectbox("Choose a page", page_names)
+
+# Sidebar Filters
+domain_options = df['Domain'].dropna().unique()
+channel_options = df['Channel'].dropna().unique()
+sentiment_options = df['Sentiment'].dropna().unique()
+discrimination_options = df['Discrimination'].dropna().unique()
+
+domain_filter = st.sidebar.multiselect('Select Domain', options=domain_options, default=domain_options)
+channel_filter = st.sidebar.multiselect('Select Channel', options=channel_options, default=channel_options)
+sentiment_filter = st.sidebar.multiselect('Select Sentiment', options=sentiment_options, default=sentiment_options)
+discrimination_filter = st.sidebar.multiselect('Select Discrimination', options=discrimination_options, default=discrimination_options)
+
+# Apply filters
+df_filtered = df[(df['Domain'].isin(domain_filter)) & 
+                 (df['Channel'].isin(channel_filter)) & 
+                 (df['Sentiment'].isin(sentiment_filter)) & 
+                 (df['Discrimination'].isin(discrimination_filter))]
+
+# Define a color palette for consistent visualization styles
+color_palette = px.colors.sequential.Viridis
+
+
+# Visualisation for Domain Distribution
+def create_pie_chart(df, column, title):
+    fig = px.pie(df, names=column, title=title, hole=0.35)
+    fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), legend=dict(x=0.1, y=1), font=dict(size=12))
+    fig.update_traces(marker=dict(colors=color_palette))
+    return fig
+
+# Visualization for Distribution of Gender versus Ethnicity
+def create_gender_ethnicity_distribution_chart(df):
+    df['GenderOrEthnicity'] = df['Domain'].apply(lambda x: "Gender: Women & LGBTQIA+" if x in ["Women", "LGBTQIA+"] else "Ethnicity")
+    fig = px.pie(df, names='GenderOrEthnicity', title='Distribution of Gender versus Ethnicity', hole=0.35)
+    fig.update_layout(margin=dict(l=20, r=20, t=30, b=20), legend=dict(x=0.1, y=1), font=dict(size=12))
+    return fig
+
+# Visualization for Sentiment Distribution Across Domains
+def create_sentiment_distribution_chart(df):
+    df['Discrimination'] = df['Discrimination'].replace({"Non Discriminative": "Non-Discriminative"})  # Assuming typo in the original script
+    domain_counts = df.groupby(['Domain', 'Sentiment']).size().reset_index(name='counts')
+    fig = px.bar(domain_counts, x='Domain', y='counts', color='Sentiment', title="Sentiment Distribution Across Domains", barmode='stack')
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Domain", yaxis_title="Counts", font=dict(size=12))
+    return fig
+
+# Visualization for Correlation between Sentiment and Discrimination
+def create_sentiment_discrimination_grouped_chart(df):
+    # Creating a crosstab of 'Sentiment' and 'Discrimination'
+    crosstab_df = pd.crosstab(df['Sentiment'], df['Discrimination'])
+    
+    # Check if 'Yes' and 'No' are in the columns after the crosstab operation
+    value_vars = crosstab_df.columns.intersection(['Yes', 'No']).tolist()
+    
+    # If 'No' is not in columns, it will not be included in melting
+    melted_df = pd.melt(crosstab_df.reset_index(), id_vars='Sentiment', value_vars=value_vars, var_name='Discrimination', value_name='Count')
+    
+    # Proceeding to plot only if we have data to plot
+    if not melted_df.empty:
+        fig = px.bar(melted_df, x='Sentiment', y='Count', color='Discrimination', barmode='group', title="Sentiment vs. Discrimination")
+        fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Sentiment", yaxis_title="Count", font=dict(size=12))
+        return fig
     else:
-        chart = alt.Chart(data).mark_circle().encode(x='Sector', y='Mentions', color='Sector').properties(title=title)
-    st.altair_chart(chart, use_container_width=True)
+        return "No data to display for the selected filters."
 
-# Streamlit app layout
-st.title('GESI Analysis Dashboard')
+# Function for Top Domains with Negative Sentiment Chart
+def create_top_negative_sentiment_domains_chart(df):
+    domain_counts = df.groupby(['Domain', 'Sentiment']).size().unstack(fill_value=0)
+    domain_counts.sort_values(by='Negative', ascending=False, inplace=True)
+    domain_counts_subset = domain_counts.iloc[:3, [0]]
+    domain_counts_subset = domain_counts_subset.rename(columns={domain_counts_subset.columns[0]: 'Count'})
+    domain_counts_subset = domain_counts_subset.reset_index()
+    colors = ['limegreen', 'crimson', 'darkcyan']
+    fig = px.bar(domain_counts_subset, x='Count', y='Domain', title='Top Domains with Negative Sentiment', color='Domain',
+                 orientation='h', color_discrete_sequence=colors)
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Negative sentiment content Count", yaxis_title="Domain")
+    return fig
 
-# Sidebar filters
-data = load_data()
-st.sidebar.header('Filters')
-start_date, end_date = st.sidebar.date_input('Select Date Range', [datetime(2021, 1, 1), datetime(2021, 4, 10)])
-keyword = st.sidebar.selectbox('Select Keyword', ['All'] + ['Education', 'Employment', 'Healthcare'])
-gender = st.sidebar.multiselect('Select Gender', ['Male', 'Female', 'Non-binary'])
-social_group = st.sidebar.multiselect('Select Social Group', ['Group A', 'Group B', 'Group C'])
-sector = st.sidebar.multiselect('Select Sector', ['Health', 'Education', 'Technology'])
-district_province = st.sidebar.multiselect('Select District/Province', ['District A', 'District B', 'Province C'])
-role_position = st.sidebar.multiselect('Select Role/Position', ['Leadership', 'Technical', 'Administrative'])
-education_enrollment = st.sidebar.radio('Select Education Enrollment Status', ['Enrolled', 'Not Enrolled'])
+# Function for Key Phrases in Negative Sentiment Content Chart
+def create_key_phrases_negative_sentiment_chart(df):
+    cv = CountVectorizer(ngram_range=(3,3), stop_words='english')
+    trigrams = cv.fit_transform(df['Content'][df['Sentiment'] == 'Negative'])
+    count_values = trigrams.toarray().sum(axis=0)
+    ngram_freq = pd.DataFrame(sorted([(count_values[i], k) for k, i in cv.vocabulary_.items()], reverse=True))
+    ngram_freq.columns = ['frequency', 'ngram']
+    fig = px.bar(ngram_freq.head(10), x='frequency', y='ngram', orientation='h', title='Key phrases in Negative Sentiment Content')
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Frequency", yaxis_title="Trigram")
+    return fig
 
-# Main content - Visualizations in a 2 x 2 grid
-col1, col2 = st.columns(2)
-with col1:
-    st.header('Time Series Analysis on GESI Keyword Usage')
-    visualize_data("time_series", data, 'Keyword Mentions Over Time')
+# Function for Prevalence of Discriminatory Content Chart
+def create_prevalence_discriminatory_content_chart(df):
+    domain_counts = df.groupby(['Domain', 'Discrimination']).size().unstack(fill_value=0)
+    fig = px.bar(domain_counts, x=domain_counts.index, y=['Discriminative', 'Non-Discriminative'], barmode='group',
+                 title='Prevalence of Discriminatory Content')
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Domain", yaxis_title="Count")
+    return fig
 
-with col2:
-    st.header('Sentiment Analysis Results')
-    visualize_data("bar", data, 'Sentiment Analysis by Gender')
+# Function for Top Domains with Discriminatory Content Chart
+def create_top_discriminatory_domains_chart(df):
+    domain_counts = df.groupby(['Domain', 'Discrimination']).size().unstack(fill_value=0)
+    domain_counts.sort_values(by='Discriminative', ascending=False, inplace=True)
+    domain_counts_subset = domain_counts.iloc[:3]
+    domain_counts_subset = domain_counts_subset.rename(columns={'Discriminative': 'Count'})
+    fig = px.bar(domain_counts_subset, x='Count', y=domain_counts_subset.index, orientation='h',
+                 title='Top Domains with Discriminatory Content')
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Discriminatory Content Count", yaxis_title="Domain")
+    return fig
 
-col3, col4 = st.columns(2)
-with col3:
-    st.header('Sector-wise Analysis')
-    visualize_data("bar", data, 'Sector Analysis')
+# Function for Channel-wise Sentiment Over Time Chart
+def create_sentiment_distribution_by_channel_chart(df):
+    sentiment_by_channel = df.groupby(['Channel', 'Sentiment']).size().reset_index(name='counts')
+    fig = px.bar(sentiment_by_channel, x='Channel', y='counts', color='Sentiment', title="Sentiment Distribution by Channel", barmode='group')
+    fig.update_layout(margin=dict(l=20, r=20, t=40, b=20), xaxis_title="Channel", yaxis_title="Counts", font=dict(size=12))
+    return fig
 
-with col4:
-    st.header('District/Province Level Analysis')
-    visualize_data("bar", data, 'District Analysis')
+# Function for Channel-wise Distribution of Discriminative Content Chart
+def create_channel_discrimination_chart(df):
+    channel_discrimination = df.groupby(['Channel', 'Discrimination']).size().unstack(fill_value=0)
+    fig = px.bar(channel_discrimination, x=channel_discrimination.index, y=['Discriminative', 'Non-Discriminative'], barmode='group')
+    fig.update_layout(title='Channel-wise Distribution of Discriminative Content', margin=dict(l=20, r=20, t=40, b=20))
+    return fig
+
+# Function for rendering dashboard
+def render_dashboard(page, df_filtered):
+    if page == "Overview":
+        st.title("Overview Dashboard")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_pie_chart(df_filtered, 'Domain', 'Distribution of Domains'))
+        with col2:
+            st.plotly_chart(create_gender_ethnicity_distribution_chart(df_filtered))
+
+        col3, col4 = st.columns(2)
+        with col3:
+            st.plotly_chart(create_sentiment_distribution_chart(df_filtered))
+        with col4:
+            chart = create_sentiment_discrimination_grouped_chart(df_filtered)
+            if isinstance(chart, str):
+                st.write(chart)
+            else:
+                st.plotly_chart(chart)
+
+    elif page == "Sentiment Analysis":
+        st.title("Sentiment Analysis Dashboard")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_sentiment_distribution_chart(df_filtered))
+        with col2:
+            st.plotly_chart(create_top_negative_sentiment_domains_chart(df_filtered))
+
+        col3, col4 = st.columns(2)
+        with col3:
+            st.plotly_chart(create_key_phrases_negative_sentiment_chart(df_filtered))
+
+    elif page == "Discrimination Analysis":
+        st.title("Discrimination Analysis Dashboard")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_prevalence_discriminatory_content_chart(df_filtered))
+        with col2:
+            st.plotly_chart(create_top_discriminatory_domains_chart(df_filtered))
+
+    elif page == "Channel Analysis":
+        st.title("Channel Analysis Dashboard")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_sentiment_distribution_by_channel_chart(df_filtered))
+        with col2:
+            st.plotly_chart(create_channel_discrimination_chart(df_filtered))
+
+
+# Render the selected dashboard page
+render_dashboard(page, df_filtered)
